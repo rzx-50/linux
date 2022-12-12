@@ -274,6 +274,7 @@ static const struct regmap_config y030xx067a_regmap_config = {
 
 static int y030xx067a_probe(struct spi_device *spi)
 {
+	const struct spi_device_id *id = spi_get_device_id(spi);
 	struct device *dev = &spi->dev;
 	struct y030xx067a *priv;
 	int err;
@@ -291,7 +292,7 @@ static int y030xx067a_probe(struct spi_device *spi)
 		return PTR_ERR(priv->map);
 	}
 
-	priv->panel_info = of_device_get_match_data(dev);
+	priv->panel_info = (const struct y030xx067a_info *) id->driver_data;
 	if (!priv->panel_info)
 		return -EINVAL;
 
@@ -362,8 +363,14 @@ static const struct y030xx067a_info y030xx067a_info = {
 	.bus_flags = DRM_BUS_FLAG_PIXDATA_SAMPLE_POSEDGE | DRM_BUS_FLAG_DE_LOW,
 };
 
+static const struct spi_device_id y030xx067a_id[] = {
+	{ "y030xx067a", (kernel_ulong_t) &y030xx067a_info },
+	{ /* sentinel */ }
+};
+MODULE_DEVICE_TABLE(spi, y030xx067a_id);
+
 static const struct of_device_id y030xx067a_of_match[] = {
-	{ .compatible = "abt,y030xx067a", .data = &y030xx067a_info },
+	{ .compatible = "abt,y030xx067a" },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, y030xx067a_of_match);
@@ -373,6 +380,7 @@ static struct spi_driver y030xx067a_driver = {
 		.name = "abt-y030xx067a",
 		.of_match_table = y030xx067a_of_match,
 	},
+	.id_table = y030xx067a_id,
 	.probe = y030xx067a_probe,
 	.remove = y030xx067a_remove,
 };
