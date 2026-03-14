@@ -98,8 +98,8 @@
 
 	battery: battery {
 		compatible = "simple-battery";
-		voltage-min-design-microvolt = <3692000>;
-		voltage-max-design-microvolt = <3900000>;
+		voltage-min-design-microvolt = <3600000>;
+		voltage-max-design-microvolt = <4200000>;
 		charge-full-design-microamp-hours = <1020000>;
 	};
 
