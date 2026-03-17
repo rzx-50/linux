@@ -423,7 +423,7 @@ static ssize_t policy_update(u32 mask, const char __user *buf, size_t size,
 	/* high level check about policy management - fine grained in
 	 * below after unpack
 	 */
-	error = aa_may_manage_policy(label, ns, mask);
+	error = aa_may_manage_policy(current_cred(), label, ns, mask);
 	if (error)
 		goto end_section;
 
@@ -486,7 +486,8 @@ static ssize_t profile_remove(struct file *f, const char __user *buf,
 	/* high level check about policy management - fine grained in
 	 * below after unpack
 	 */
-	error = aa_may_manage_policy(label, ns, AA_MAY_REMOVE_POLICY);
+	error = aa_may_manage_policy(current_cred(), label, ns,
+				     AA_MAY_REMOVE_POLICY);
 	if (error)
 		goto out;
 
@@ -618,23 +619,23 @@ static void profile_query_cb(struct aa_profile *profile, struct aa_perms *perms,
 
 	if (profile_unconfined(profile))
 		return;
-	if (rules->file.dfa && *match_str == AA_CLASS_FILE) {
-		state = aa_dfa_match_len(rules->file.dfa,
-					 rules->file.start[AA_CLASS_FILE],
+	if (rules->file->dfa && *match_str == AA_CLASS_FILE) {
+		state = aa_dfa_match_len(rules->file->dfa,
+					 rules->file->start[AA_CLASS_FILE],
 					 match_str + 1, match_len - 1);
 		if (state) {
 			struct path_cond cond = { };
 
-			tmp = *(aa_lookup_fperms(&(rules->file), state, &cond));
+			tmp = *(aa_lookup_fperms(rules->file, state, &cond));
 		}
-	} else if (rules->policy.dfa) {
+	} else if (rules->policy->dfa) {
 		if (!RULE_MEDIATES(rules, *match_str))
 			return;	/* no change to current perms */
-		state = aa_dfa_match_len(rules->policy.dfa,
-					 rules->policy.start[0],
+		state = aa_dfa_match_len(rules->policy->dfa,
+					 rules->policy->start[0],
 					 match_str, match_len);
 		if (state)
-			tmp = *aa_lookup_perms(&rules->policy, state);
+			tmp = *aa_lookup_perms(rules->policy, state);
 	}
 	aa_apply_modes_to_perms(profile, &tmp);
 	aa_perms_accum_raw(perms, &tmp);
@@ -1095,7 +1096,7 @@ static int seq_profile_attach_show(struct seq_file *seq, void *v)
 	struct aa_profile *profile = labels_profile(label);
 	if (profile->attach.xmatch_str)
 		seq_printf(seq, "%s\n", profile->attach.xmatch_str);
-	else if (profile->attach.xmatch.dfa)
+	else if (profile->attach.xmatch->dfa)
 		seq_puts(seq, "<unknown>\n");
 	else
 		seq_printf(seq, "%s\n", profile->base.name);
@@ -1636,6 +1637,15 @@ static const char *rawdata_get_link_base(struct dentry *dentry,
 
 	label = aa_get_label_rcu(&proxy->label);
 	profile = labels_profile(label);
+
+	/* rawdata can be null when aa_g_export_binary is unset during
+	 * runtime and a profile is replaced
+	 */
+	if (!profile->rawdata) {
+		aa_put_label(label);
+		return ERR_PTR(-ENOENT);
+	}
+
 	depth = profile_depth(profile);
 	target = gen_symlink_name(depth, profile->rawdata->name, name);
 	aa_put_label(label);
@@ -1697,6 +1707,10 @@ int __aafs_profile_mkdir(struct aa_profile *profile, struct dentry *parent)
 		struct aa_profile *p;
 		p = aa_deref_parent(profile);
 		dent = prof_dir(p);
+		if (!dent) {
+			error = -ENOENT;
+			goto fail2;
+		}
 		/* adding to parent that previously didn't have children */
 		dent = aafs_create_dir("profiles", dent);
 		if (IS_ERR(dent))
@@ -1805,7 +1819,8 @@ static int ns_mkdir_op(struct mnt_idmap *idmap, struct inode *dir,
 	int error;
 
 	label = begin_current_label_crit_section();
-	error = aa_may_manage_policy(label, NULL, AA_MAY_LOAD_POLICY);
+	error = aa_may_manage_policy(current_cred(), label, NULL,
+				     AA_MAY_LOAD_POLICY);
 	end_current_label_crit_section(label);
 	if (error)
 		return error;
@@ -1854,7 +1869,8 @@ static int ns_rmdir_op(struct inode *dir, struct dentry *dentry)
 	int error;
 
 	label = begin_current_label_crit_section();
-	error = aa_may_manage_policy(label, NULL, AA_MAY_LOAD_POLICY);
+	error = aa_may_manage_policy(current_cred(), label, NULL,
+				     AA_MAY_LOAD_POLICY);
 	end_current_label_crit_section(label);
 	if (error)
 		return error;
@@ -2361,6 +2377,7 @@ static struct aa_sfs_entry aa_sfs_entry_policy[] = {
 
 static struct aa_sfs_entry aa_sfs_entry_mount[] = {
 	AA_SFS_FILE_STRING("mask", "mount umount pivot_root"),
+	AA_SFS_FILE_STRING("move_mount", "detached"),
 	{ }
 };
 

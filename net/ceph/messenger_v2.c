@@ -1091,13 +1091,16 @@ static int decrypt_control_remainder(struct ceph_connection *con)
 static int process_v2_sparse_read(struct ceph_connection *con,
 				  struct page **pages, int spos)
 {
-	struct ceph_msg_data_cursor *cursor = &con->v2.in_cursor;
+	struct ceph_msg_data_cursor cursor;
 	int ret;
+
+	ceph_msg_data_cursor_init(&cursor, con->in_msg,
+				  con->in_msg->sparse_read_total);
 
 	for (;;) {
 		char *buf = NULL;
 
-		ret = con->ops->sparse_read(con, cursor, &buf);
+		ret = con->ops->sparse_read(con, &cursor, &buf);
 		if (ret <= 0)
 			return ret;
 
@@ -1115,11 +1118,11 @@ static int process_v2_sparse_read(struct ceph_connection *con,
 			} else {
 				struct bio_vec bv;
 
-				get_bvec_at(cursor, &bv);
+				get_bvec_at(&cursor, &bv);
 				len = min_t(int, len, bv.bv_len);
 				memcpy_page(bv.bv_page, bv.bv_offset,
 					    spage, soff, len);
-				ceph_msg_data_advance(cursor, len);
+				ceph_msg_data_advance(&cursor, len);
 			}
 			spos += len;
 			ret -= len;
@@ -1132,7 +1135,7 @@ static int decrypt_tail(struct ceph_connection *con)
 	struct sg_table enc_sgt = {};
 	struct sg_table sgt = {};
 	struct page **pages = NULL;
-	bool sparse = con->in_msg->sparse_read;
+	bool sparse = !!con->in_msg->sparse_read_total;
 	int dpos = 0;
 	int tail_len;
 	int ret;
@@ -2038,6 +2041,9 @@ static int prepare_sparse_read_data(struct ceph_connection *con)
 	if (!con_secure(con))
 		con->in_data_crc = -1;
 
+	ceph_msg_data_cursor_init(&con->v2.in_cursor, msg,
+				  msg->sparse_read_total);
+
 	reset_in_kvecs(con);
 	con->v2.in_state = IN_S_PREPARE_SPARSE_DATA_CONT;
 	con->v2.data_len_remain = data_len(msg);
@@ -2064,7 +2070,7 @@ static int prepare_read_tail_plain(struct ceph_connection *con)
 	}
 
 	if (data_len(msg)) {
-		if (msg->sparse_read)
+		if (msg->sparse_read_total)
 			con->v2.in_state = IN_S_PREPARE_SPARSE_DATA;
 		else
 			con->v2.in_state = IN_S_PREPARE_READ_DATA;
@@ -2387,7 +2393,7 @@ bad:
  */
 static int process_auth_done(struct ceph_connection *con, void *p, void *end)
 {
-	u8 session_key_buf[CEPH_KEY_LEN + 16];
+	u8 session_key_buf[CEPH_MAX_KEY_LEN + 16];
 	u8 con_secret_buf[CEPH_MAX_CON_SECRET_LEN + 16];
 	u8 *session_key = PTR_ALIGN(&session_key_buf[0], 16);
 	u8 *con_secret = PTR_ALIGN(&con_secret_buf[0], 16);
@@ -2403,7 +2409,9 @@ static int process_auth_done(struct ceph_connection *con, void *p, void *end)
 
 	ceph_decode_64_safe(&p, end, global_id, bad);
 	ceph_decode_32_safe(&p, end, con->v2.con_mode, bad);
+
 	ceph_decode_32_safe(&p, end, payload_len, bad);
+	ceph_decode_need(&p, end, payload_len, bad);
 
 	dout("%s con %p global_id %llu con_mode %d payload_len %d\n",
 	     __func__, con, global_id, con->v2.con_mode, payload_len);

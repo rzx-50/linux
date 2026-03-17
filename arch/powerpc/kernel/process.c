@@ -1198,11 +1198,11 @@ void kvmppc_save_user_regs(void)
 
 	usermsr = current->thread.regs->msr;
 
+	/* Caller has enabled FP/VEC/VSX/TM in MSR */
 	if (usermsr & MSR_FP)
-		save_fpu(current);
-
+		__giveup_fpu(current);
 	if (usermsr & MSR_VEC)
-		save_altivec(current);
+		__giveup_altivec(current);
 
 #ifdef CONFIG_PPC_TRANSACTIONAL_MEM
 	if (usermsr & MSR_TM) {
@@ -1882,8 +1882,6 @@ int copy_thread(struct task_struct *p, const struct kernel_clone_args *args)
 	return 0;
 }
 
-void preload_new_slb_context(unsigned long start, unsigned long sp);
-
 /*
  * Set up a thread for executing a new program
  */
@@ -1891,9 +1889,6 @@ void start_thread(struct pt_regs *regs, unsigned long start, unsigned long sp)
 {
 #ifdef CONFIG_PPC64
 	unsigned long load_addr = regs->gpr[2];	/* saved by ELF_PLAT_INIT */
-
-	if (IS_ENABLED(CONFIG_PPC_BOOK3S_64) && !radix_enabled())
-		preload_new_slb_context(start, sp);
 #endif
 
 #ifdef CONFIG_PPC_TRANSACTIONAL_MEM
@@ -2258,6 +2253,22 @@ unsigned long __get_wchan(struct task_struct *p)
 	return ret;
 }
 
+static bool empty_user_regs(struct pt_regs *regs, struct task_struct *tsk)
+{
+	unsigned long stack_page;
+
+	// A non-empty pt_regs should never have a zero MSR or TRAP value.
+	if (regs->msr || regs->trap)
+		return false;
+
+	// Check it sits at the very base of the stack
+	stack_page = (unsigned long)task_stack_page(tsk);
+	if ((unsigned long)(regs + 1) != stack_page + THREAD_SIZE)
+		return false;
+
+	return true;
+}
+
 static int kstack_depth_to_print = CONFIG_PRINT_STACK_DEPTH;
 
 void __no_sanitize_address show_stack(struct task_struct *tsk,
@@ -2322,9 +2333,13 @@ void __no_sanitize_address show_stack(struct task_struct *tsk,
 			lr = regs->link;
 			printk("%s--- interrupt: %lx at %pS\n",
 			       loglvl, regs->trap, (void *)regs->nip);
-			__show_regs(regs);
-			printk("%s--- interrupt: %lx\n",
-			       loglvl, regs->trap);
+
+			// Detect the case of an empty pt_regs at the very base
+			// of the stack and suppress showing it in full.
+			if (!empty_user_regs(regs, tsk)) {
+				__show_regs(regs);
+				printk("%s--- interrupt: %lx\n", loglvl, regs->trap);
+			}
 
 			firstframe = 1;
 		}
